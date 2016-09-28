@@ -102,11 +102,11 @@ let scanObjectVersions = async ({cfg, Artifact, Task, publicArtifactBucket}) => 
     let res = await s3.listObjectVersions(params).promise();
 
     res.data.Versions.forEach((obj) => {
-      // ...
+      console.log("Vers " + obj.Key + " " + obj.LastModified);
     });
 
     res.data.DeleteMarkers.forEach((obj) => {
-      // ...
+      //console.log("DM " + obj.Key + " " + obj.LastModified);
     });
 
     params.KeyMarker = res.data.NextKeyMarker;
@@ -114,4 +114,4 @@ let scanObjectVersions = async ({cfg, Artifact, Task, publicArtifactBucket}) => 
   };
 };
 
-module.exports = scanTasks;
+module.exports = scanObjectVersions;
