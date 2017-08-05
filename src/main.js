@@ -224,13 +224,13 @@ let load = loader({
 
   // Create TaskDependency table
   TaskDependency: {
-    requires: ['cfg', 'monitor', 'process'],
+    requires: ['cfg', 'process'],
     setup: async ({cfg, monitor, process}) => {
       let TaskDependency = data.TaskDependency.setup({
         table:            cfg.app.taskDependencyTableName,
         account:          cfg.azureTableAccount,
         credentials:      cfg.taskcluster.credentials,
-        monitor:          monitor.prefix('table.taskdependencies'),
+        //monitor:          monitor.prefix('table.taskdependencies'),
       });
       await TaskDependency.ensureTable();
       return TaskDependency;
@@ -544,6 +544,95 @@ let load = loader({
       monitor.count('expire-task-dependency.done');
       monitor.stopResourceMonitoring();
       await monitor.flush();
+    },
+  },
+
+  'fix': {
+    requires: ['cfg', 'TaskDependency', 'Provisioner'],
+    setup: async ({cfg, TaskDependency, Provisioner}) => {
+      await Promise.all([ "buildbot-bridge", "localprovisioner", "manual-packet", "null-provisioner", "pmoore-manual",
+        "releng-hardware", "scl3-puppet", "scriptworker-prov-v1", "signing-provisioner-v1", "test-dummy-provisioner", "test-provisioner",
+        'aws-provisioner-v1'].map(async prov => {
+          console.log(
+              await TaskDependency.prototype.__aux.deleteEntity(
+                  Provisioner.prototype.__partitionKey.exact({provisionerId: prov}),
+                  Provisioner.prototype.__rowKey.exact({}),
+                  {eTag: '*'}));
+        }));
+    }
+  },
+
+  'fix2': {
+    requires: ['cfg', 'TaskDependency'],
+    setup: async ({cfg, TaskDependency}) => {
+      await Promise.all([ "buildbot-bridge", "localprovisioner", "manual-packet", "null-provisioner", "pmoore-manual",
+        "releng-hardware", "scl3-puppet", "scriptworker-prov-v1", "signing-provisioner-v1", "test-dummy-provisioner", "test-provisioner",
+        'aws-provisioner-v1'].map(async prov => {
+        var encodeContinuationToken = function encodeContinuationToken(result) {
+          if (!result.nextPartitionKey && !result.nextRowKey) {
+            return null;
+          }
+          return encodeURIComponent(result.nextPartitionKey || '').replace(/~/g, '%7e') + '~' + encodeURIComponent(result.nextRowKey || '').replace(/~/g, '%7e');
+        };
+
+        /** Decode continuation token, inverse of encodeContinuationToken */
+        var decodeContinuationToken = function decodeContinuationToken(token) {
+          if (token === undefined || token === null) {
+            return {
+              nextPartitionKey: undefined,
+              nextRowKey: undefined
+            };
+          }
+          assert(typeof token === 'string', "Continuation token must be a string if " + "not undefined");
+          // Split at tilde (~)
+          token = token.split('~');
+          assert(token.length === 2, "Expected an encoded continuation token with " + "a single tilde as separator");
+          return {
+            nextPartitionKey: decodeURIComponent(token[0]),
+            nextRowKey: decodeURIComponent(token[1])
+          };
+        };
+
+        var filter = TaskDependency.prototype.__filterBuilder(null, new TaskDependency.types.String("PartitionKey"), TaskDependency.op.equal(prov));
+        var count = 0;
+        var fetchResults = function fetchResults(continuation) {
+          var continuation = decodeContinuationToken(continuation);
+          return TaskDependency.prototype.__aux.queryEntities({
+            filter,
+            top: 1000,
+            nextPartitionKey: continuation.nextPartitionKey,
+            nextRowKey: continuation.nextRowKey
+          }).then(function (data) {
+            count += data.entities.length;
+            return {
+              entries: data.entities,
+              continuation: encodeContinuationToken(data)
+            };
+          });
+        };
+
+        var results = fetchResults(undefined);
+
+        var handleResults = function handleResults(results) {
+          return results.then(function (data) {
+            return Promise.all(data.entries.map(function (item) {
+              if ('dependentTaskId' in item) {
+                return;
+              }
+              console.log(item);
+            })).then(function () {
+              if (data.continuation) {
+                return handleResults(fetchResults(data.continuation));
+              }
+            });
+          });
+        };
+        results = handleResults(results);
+
+        await results;
+
+        console.log('done', prov);
+      }));
     },
   },
 
